@@ -111,6 +111,9 @@
 *.pem
 *.key
 
+# NebulaTrade local data (contains encrypted exchange credentials)
+**/backend/data/
+
 # Temporary files
 *.tmp
 *.temp
