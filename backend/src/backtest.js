@@ -1,5 +1,6 @@
 import { generateCandles, market, TIMEFRAMES } from './market.js';
 import { ema, rsi, sma } from './engine.js';
+import { marketData } from './marketData.js';
 
 const STRATEGIES = {
   ema_cross: 'EMA Crossover',
@@ -28,7 +29,7 @@ function sharpe(returns, periodsPerYear) {
   return (mean / sd) * Math.sqrt(periodsPerYear);
 }
 
-export function runBacktest({
+export async function runBacktest({
   symbol = 'BTC/USDT',
   timeframe = '1h',
   strategy = 'ema_cross',
@@ -36,11 +37,16 @@ export function runBacktest({
   initialBalance = 10000,
   candleCount = 500,
   feeRate = 0.0005,
+  useRealData = true,
 } = {}) {
   if (!STRATEGIES[strategy]) throw new Error(`Unknown strategy: ${strategy}`);
   const bucket = TIMEFRAMES[timeframe];
   if (!bucket) throw new Error(`Unknown timeframe: ${timeframe}`);
-  const candles = generateCandles(symbol, timeframe, Math.min(Math.max(candleCount, 120), 1000));
+  const count = Math.min(Math.max(candleCount, 120), 1000);
+  // Real exchange history when available; deterministic simulator otherwise.
+  let candles = useRealData ? await marketData.getCandles(symbol, timeframe, count) : null;
+  const dataSource = candles && candles.length >= 60 ? 'live' : 'simulator';
+  if (!candles || candles.length < 60) candles = generateCandles(symbol, timeframe, count);
   const closes = candles.map((c) => c.c);
 
   const trades = [];
@@ -217,6 +223,7 @@ export function runBacktest({
     equityCurve: curve,
     trades: trades.slice(-200),
     candleCount: candles.length,
+    dataSource,
   };
 }
 

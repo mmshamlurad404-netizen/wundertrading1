@@ -24,6 +24,14 @@ function symbolOf(pair) {
   return `${base}${quote}`.toUpperCase();
 }
 
+// WebSocket endpoint for a user data stream listen key.
+export function userStreamUrl(listenKey, { marketType = 'futures', testnet = false } = {}) {
+  if (marketType === 'spot') {
+    return `${testnet ? 'wss://stream.testnet.binance.vision' : 'wss://stream.binance.com:9443'}/ws/${listenKey}`;
+  }
+  return `${testnet ? 'wss://stream.binancefuture.com' : 'wss://fstream.binance.com'}/ws/${listenKey}`;
+}
+
 async function timestamp(marketType, testnet) {
   const key = `${marketType}.${testnet ? 't' : 'l'}`;
   const base = baseFor(marketType, testnet);
@@ -126,6 +134,7 @@ export const binance = {
     const symbol = symbolOf(intent.symbol);
     const params = { symbol };
     const isSpot = marketType === 'spot';
+    if (intent.clientOrderId) params.newClientOrderId = String(intent.clientOrderId).slice(0, 36);
 
     if (isSpot) {
       params.side = intent.side === 'buy' ? 'BUY' : 'SELL';
@@ -198,6 +207,38 @@ export const binance = {
       method: 'DELETE',
       path,
       params: { symbol: symbolOf(symbol), orderId },
+    });
+  },
+
+  // ---- user data stream (listen key) ----
+  async createListenKey(creds, opts = {}) {
+    const marketType = opts.marketType || 'futures';
+    const base = baseFor(marketType, opts.testnet);
+    const path = marketType === 'spot' ? '/api/v3/userDataStream' : '/fapi/v1/listenKey';
+    const { data } = await httpJson(`${base}${path}`, {
+      method: 'POST',
+      headers: { 'X-MBX-APIKEY': creds.apiKey },
+    });
+    return data?.listenKey || null;
+  },
+
+  async keepAliveListenKey(creds, listenKey, opts = {}) {
+    const marketType = opts.marketType || 'futures';
+    const base = baseFor(marketType, opts.testnet);
+    const path = marketType === 'spot' ? '/api/v3/userDataStream' : '/fapi/v1/listenKey';
+    await httpJson(`${base}${path}?listenKey=${encodeURIComponent(listenKey)}`, {
+      method: 'PUT',
+      headers: { 'X-MBX-APIKEY': creds.apiKey },
+    });
+  },
+
+  async closeListenKey(creds, listenKey, opts = {}) {
+    const marketType = opts.marketType || 'futures';
+    const base = baseFor(marketType, opts.testnet);
+    const path = marketType === 'spot' ? '/api/v3/userDataStream' : '/fapi/v1/listenKey';
+    await httpJson(`${base}${path}?listenKey=${encodeURIComponent(listenKey)}`, {
+      method: 'DELETE',
+      headers: { 'X-MBX-APIKEY': creds.apiKey },
     });
   },
 

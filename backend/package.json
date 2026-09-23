@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "NT_DATA_DIR=${NT_DATA_DIR:-/tmp/nebulatrade-test} node --test"
+    "test": "NT_DATA_DIR=${NT_DATA_DIR:-/tmp/nebulatrade-test} NT_LIVE_MARKET=0 node --test --test-concurrency=1"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

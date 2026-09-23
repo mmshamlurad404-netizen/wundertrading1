@@ -1,5 +1,7 @@
 import { store } from './store.js';
 import { market } from './market.js';
+import { marketData } from './marketData.js';
+import { llmEnabled, llmDecide } from './aiProvider.js';
 import {
   openPosition,
   closePosition,
@@ -408,6 +410,10 @@ class BotEngine {
   }
 
   fundingRate(symbol) {
+    // Prefer the real funding rate published by the venues; fall back to a
+    // simulated rate only when no live data is available.
+    const real = marketData.fundingRate(symbol);
+    if (real !== null) return real;
     if (!this.fundingRates.has(symbol)) this.fundingRates.set(symbol, 0.004 + Math.random() * 0.02);
     let r = this.fundingRates.get(symbol);
     r = Math.max(0.001, Math.min(0.05, r + (Math.random() - 0.5) * 0.002));
@@ -434,6 +440,57 @@ class BotEngine {
     const crossedUp = fPrev <= sPrev && f > s;
     const crossedDown = fPrev >= sPrev && f < s;
     const trendUp = f > s;
+
+    // Optional LLM overlay: when configured and enabled per bot, ask the model
+    // for a decision (throttled) and act on it. Falls through to the rules when
+    // the provider is unavailable or returns nothing usable.
+    if (cfg.useLlm && llmEnabled()) {
+      const interval = Number(cfg.llmIntervalMs) || 60000;
+      const last = bot.runtime?.llmAt || 0;
+      if (Date.now() - last >= interval) {
+        const decision = await llmDecide({
+          symbol: bot.symbol,
+          timeframe: cfg.timeframe || '1m',
+          indicators: { rsi14: r, ema9: f, ema21: s, trend: trendUp ? 'up' : 'down' },
+          recentCandles: candles,
+          baseSignal: crossedUp ? 'long' : crossedDown ? 'short' : 'flat',
+        });
+        store.update('bots', bot.id, {
+          runtime: { ...(bot.runtime || {}), llmAt: Date.now(), llmDecision: decision },
+        });
+        if (decision && decision.action !== 'flat') {
+          if (!open.length) {
+            const available = this.availableMargin(account);
+            const side = decision.action === 'long' ? 'long' : 'short';
+            await openPosition({
+              userId: bot.userId,
+              accountId: bot.accountId,
+              botId: bot.id,
+              symbol: bot.symbol,
+              side,
+              margin: Math.min(cfg.orderSize || 500, available * 0.55),
+              leverage: cfg.leverage || 2,
+              takeProfit:
+                side === 'long'
+                  ? price * (1 + (cfg.takeProfitPct || 2) / 100)
+                  : price * (1 - (cfg.takeProfitPct || 2) / 100),
+              stopLoss:
+                side === 'long'
+                  ? price * (1 - (cfg.stopLossPct || 1.5) / 100)
+                  : price * (1 + (cfg.stopLossPct || 1.5) / 100),
+              source: 'ai-llm',
+            });
+            log(bot.userId, bot.id, 'info', `AI(LLM) entered ${side.toUpperCase()} ${bot.symbol}: ${decision.reason || 'model signal'}`);
+          }
+          return;
+        }
+        if (decision && decision.action === 'flat' && open.length) {
+          await closePosition(open[0].id, 'ai-llm-flat');
+          log(bot.userId, bot.id, 'info', `AI(LLM) flattened ${bot.symbol}: ${decision.reason || 'model signal'}`);
+          return;
+        }
+      }
+    }
 
     if (!open.length) {
       const available = this.availableMargin(account);

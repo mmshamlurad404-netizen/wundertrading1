@@ -1,5 +1,8 @@
 import { store } from './store.js';
 import { market } from './market.js';
+import { marketData } from './marketData.js';
+import { simulateFill, roundTripPnl, DEFAULT_FEE_RATE } from './execution.js';
+import { queueUserEmail } from './mailer.js';
 import { encryptSecret, decryptSecret, maskValue, last4 } from './secret.js';
 import {
   getAdapter,
@@ -125,11 +128,19 @@ export async function openPosition({ userId, accountId, botId = null, symbol, si
 
   const price = market.getPrice(symbol);
   if (!price) throw new Error('Unknown market');
-  if ((account.balances.USDT || 0) < margin) throw new Error('Insufficient USDT balance');
-
-  account.balances.USDT -= margin;
   const notional = margin * leverage;
-  const size = notional / price;
+  // Fill against real depth when available, otherwise apply slippage.
+  const book = await marketData.getOrderBook(symbol, 20);
+  const fill = simulateFill({
+    side: side === 'long' ? 'buy' : 'sell',
+    notional,
+    referencePrice: price,
+    book,
+  });
+  if ((account.balances.USDT || 0) < margin + fill.fee) throw new Error('Insufficient USDT balance');
+
+  account.balances.USDT -= margin + fill.fee;
+  const size = fill.qty;
 
   const position = store.insert('positions', {
     userId,
@@ -138,14 +149,17 @@ export async function openPosition({ userId, accountId, botId = null, symbol, si
     symbol,
     side,
     size,
-    notional,
+    notional: fill.notional,
     margin,
     leverage,
-    entryPrice: price,
+    entryPrice: fill.fillPrice,
+    entryFee: fill.fee,
+    fillSource: fill.source,
+    slippageBps: fill.slippageBps,
     stopLoss: stopLoss ?? null,
     takeProfit: takeProfit ?? null,
     trailingStop: trailingStop ?? null,
-    trailingPeak: price,
+    trailingPeak: fill.fillPrice,
     unrealizedPnl: 0,
     realizedPnl: 0,
     status: 'open',
@@ -163,14 +177,16 @@ export async function openPosition({ userId, accountId, botId = null, symbol, si
     type: 'market',
     qty: size,
     price,
-    filledPrice: price,
+    filledPrice: fill.fillPrice,
+    fee: fill.fee,
+    feeRate: fill.feeRate,
     status: 'filled',
     reduceOnly: false,
     source,
     mode: 'paper',
   });
 
-  log(userId, botId, 'info', `Opened ${side.toUpperCase()} ${symbol} @ ${price} (${leverage}x, margin ${margin.toFixed(2)})`);
+  log(userId, botId, 'info', `Opened ${side.toUpperCase()} ${symbol} @ ${fill.fillPrice.toFixed(2)} (${leverage}x, margin ${margin.toFixed(2)}, fee ${fill.fee.toFixed(2)})`);
   return position;
 }
 
@@ -196,6 +212,7 @@ async function openLivePosition({ account, userId, botId, symbol, side, margin, 
   const notional = margin * effLeverage;
   const qty = notional / price;
 
+  const clientOrderId = `nt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const fill = await executeLive(
     account,
     {
@@ -207,6 +224,7 @@ async function openLivePosition({ account, userId, botId, symbol, side, margin, 
       leverage: effLeverage,
       takeProfit,
       stopLoss,
+      clientOrderId,
     },
     secrets
   );
@@ -242,6 +260,7 @@ async function openLivePosition({ account, userId, botId, symbol, side, margin, 
     mode: 'live',
     exchange: account.exchange,
     exchangeOrderId: fill.orderId || null,
+    clientOrderId,
     source,
     openedAt: Date.now(),
   });
@@ -261,6 +280,7 @@ async function openLivePosition({ account, userId, botId, symbol, side, margin, 
     source,
     mode: 'live',
     exchangeOrderId: fill.orderId || null,
+    clientOrderId,
   });
 
   log(userId, botId, 'success', `LIVE ${side.toUpperCase()} ${symbol} filled @ ${entryPrice} (${effLeverage}x, order ${fill.orderId})`);
@@ -277,16 +297,32 @@ export async function closePosition(positionId, reason = 'manual', accountOverri
   }
 
   const price = market.getPrice(p.symbol);
-  const dir = p.side === 'long' ? 1 : -1;
-  const pnl = dir * (price - p.entryPrice) * p.size;
+  const book = await marketData.getOrderBook(p.symbol, 20);
+  const fill = simulateFill({
+    side: p.side === 'long' ? 'sell' : 'buy',
+    qty: p.size,
+    referencePrice: price,
+    book,
+  });
+  const exitPrice = fill.fillPrice;
+  const entryFee = p.entryFee || 0;
+  const pnl = roundTripPnl({
+    side: p.side,
+    entryPrice: p.entryPrice,
+    exitPrice,
+    size: p.size,
+    entryFee,
+    exitFee: fill.fee,
+  });
   if (account) {
-    account.balances.USDT = (account.balances.USDT || 0) + p.margin + pnl;
+    account.balances.USDT = (account.balances.USDT || 0) + p.margin + pnl + entryFee;
     store.markDirty();
   }
   const updated = store.update('positions', positionId, {
     status: 'closed',
     closedAt: Date.now(),
-    closePrice: price,
+    closePrice: exitPrice,
+    exitFee: fill.fee,
     realizedPnl: pnl,
     unrealizedPnl: 0,
     closeReason: reason,
@@ -300,13 +336,15 @@ export async function closePosition(positionId, reason = 'manual', accountOverri
     type: 'market',
     qty: p.size,
     price,
-    filledPrice: price,
+    filledPrice: exitPrice,
+    fee: fill.fee,
+    feeRate: fill.feeRate,
     status: 'filled',
     reduceOnly: true,
     source: reason,
     mode: 'paper',
   });
-  log(p.userId, p.botId, pnl >= 0 ? 'success' : 'warning', `Closed ${p.side.toUpperCase()} ${p.symbol} @ ${price} => PnL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} (${reason})`);
+  log(p.userId, p.botId, pnl >= 0 ? 'success' : 'warning', `Closed ${p.side.toUpperCase()} ${p.symbol} @ ${exitPrice.toFixed(2)} => PnL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} (${reason})`);
   return updated;
 }
 
@@ -317,6 +355,7 @@ async function closeLivePosition(p, account, reason) {
   const secrets = getAccountSecrets(account);
   if (!secrets?.apiKey) throw new Error('Missing exchange API credentials');
 
+  const clientOrderId = `ntc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const fill = await executeLive(
     account,
     {
@@ -326,6 +365,7 @@ async function closeLivePosition(p, account, reason) {
       qty: p.size,
       reduceOnly: true,
       closePosition: true,
+      clientOrderId,
     },
     secrets
   );
@@ -359,6 +399,7 @@ async function closeLivePosition(p, account, reason) {
     source: reason,
     mode: 'live',
     exchangeOrderId: fill.orderId || null,
+    clientOrderId,
   });
   log(p.userId, p.botId, pnl >= 0 ? 'success' : 'warning', `LIVE closed ${p.side.toUpperCase()} ${p.symbol} @ ${price} => PnL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} (${reason})`);
   return updated;
@@ -502,13 +543,15 @@ export function log(userId, botId, level, message) {
   const all = store.data.logs;
   if (all.length > 4000) all.splice(0, all.length - 4000);
   if (level === 'success' || level === 'warning' || level === 'error') {
+    const title = level === 'success' ? 'Trade executed' : level === 'error' ? 'Error' : 'Alert';
     store.insert('notifications', {
       userId,
-      title: level === 'success' ? 'Trade executed' : level === 'error' ? 'Error' : 'Alert',
+      title,
       body: message,
       read: false,
       botId: botId || null,
     });
+    queueUserEmail(userId, `NebulaTrade: ${title}`, message);
   }
 }
 

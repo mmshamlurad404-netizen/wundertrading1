@@ -32,6 +32,7 @@ interface BacktestResult {
   avgTrade: number
   equityCurve: { t: number; equity: number }[]
   trades: { side: string; entry: number; exit: number; pnl: number; reason: string; exitTime: number }[]
+  dataSource?: 'live' | 'simulator'
 }
 
 const STRATEGIES = [
@@ -196,6 +197,9 @@ export default function Backtest() {
                 <div className="card">
                   <div className="stat-label">Max drawdown</div>
                   <div className="stat-value mono down">{result.maxDrawdownPct}%</div>
+                  <div className="stat-sub">
+                    {result.dataSource === 'live' ? 'Real market history' : 'Simulated history'}
+                  </div>
                 </div>
                 <div className="card">
                   <div className="stat-label">Win rate</div>

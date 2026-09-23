@@ -3,6 +3,7 @@ import { market, PAIR_META, TIMEFRAMES, generateCandles } from '../market.js';
 import { authMiddleware } from '../auth.js';
 import { ema, rsi, sma } from '../engine.js';
 import { runBacktest } from '../backtest.js';
+import { marketData } from '../marketData.js';
 
 const router = express.Router();
 
@@ -16,20 +17,27 @@ router.get('/ticker/:symbol', (req, res) => {
   res.json({ ticker: t });
 });
 
-router.get('/candles/:symbol', (req, res) => {
+router.get('/candles/:symbol', async (req, res) => {
   const { symbol } = req.params;
   const timeframe = req.query.timeframe || '1h';
   const limit = Math.min(Number(req.query.limit) || 200, 500);
   if (!TIMEFRAMES[timeframe]) return res.status(400).json({ error: 'Invalid timeframe' });
-  const candles = market.getCandles(symbol, timeframe, limit);
+  if (!market.getPrice(symbol)) return res.status(404).json({ error: 'Unknown market' });
+  // Prefer real exchange history; the simulator is only a fallback.
+  const real = await marketData.getCandles(symbol, timeframe, limit);
+  const candles = real || market.getCandles(symbol, timeframe, limit);
   if (!candles.length) return res.status(404).json({ error: 'Unknown market' });
-  res.json({ symbol, timeframe, candles });
+  res.json({ symbol, timeframe, candles, source: real ? 'live' : 'simulator' });
 });
 
-router.get('/orderbook/:symbol', (req, res) => {
-  const price = market.getPrice(req.params.symbol);
+router.get('/orderbook/:symbol', async (req, res) => {
+  const symbol = req.params.symbol;
+  const price = market.getPrice(symbol);
   if (!price) return res.status(404).json({ error: 'Unknown market' });
-  const meta = PAIR_META[req.params.symbol];
+  // Real depth when a public venue is reachable, otherwise a synthetic ladder.
+  const real = await marketData.getOrderBook(symbol, 20);
+  if (real) return res.json({ symbol, bids: real.bids, asks: real.asks, source: real.source });
+  const meta = PAIR_META[symbol];
   const step = price * 0.0004;
   const bids = Array.from({ length: 20 }, (_, i) => ({
     price: +(price - step * (i + 1)).toFixed(meta.decimals),
@@ -39,7 +47,15 @@ router.get('/orderbook/:symbol', (req, res) => {
     price: +(price + step * (i + 1)).toFixed(meta.decimals),
     size: +(Math.random() * 4 + 0.2).toFixed(4),
   }));
-  res.json({ symbol: req.params.symbol, bids, asks });
+  res.json({ symbol, bids, asks, source: 'simulator' });
+});
+
+router.get('/funding', (req, res) => {
+  const rates = market.listPairs().map((symbol) => {
+    const real = marketData.fundingRate(symbol);
+    return { symbol, rate: real, source: real === null ? null : 'live' };
+  });
+  res.json({ rates, updatedAt: marketData.fundingAt || null });
 });
 
 router.get('/screener', (req, res) => {
@@ -77,9 +93,9 @@ router.get('/indicators/:symbol', (req, res) => {
   });
 });
 
-router.post('/backtest', authMiddleware, (req, res) => {
+router.post('/backtest', authMiddleware, async (req, res) => {
   try {
-    const result = runBacktest(req.body || {});
+    const result = await runBacktest(req.body || {});
     res.json({ result });
   } catch (err) {
     res.status(400).json({ error: err.message });

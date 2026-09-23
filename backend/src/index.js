@@ -10,6 +10,8 @@ import { store } from './store.js';
 import { market } from './market.js';
 import { updateOpenPositions, syncLiveAccount } from './trading.js';
 import { liveFeed } from './liveFeed.js';
+import { marketData } from './marketData.js';
+import { userStreamManager } from './userStream.js';
 import './engine.js';
 
 import authRoutes from './routes/auth.js';
@@ -109,5 +111,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`[nebulatrade] websocket on ws://0.0.0.0:${PORT}/ws`);
   console.log(`[nebulatrade] markets loaded: ${market.listPairs().length}`);
   liveFeed.start();
+  marketData.start();
+  userStreamManager.start();
   setInterval(syncLiveAccounts, SYNC_INTERVAL_MS).unref?.();
 });
