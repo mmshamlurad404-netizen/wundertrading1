@@ -43,4 +43,45 @@ router.get('/me', authMiddleware, (req, res) => {
   res.json({ user: publicUser(user) });
 });
 
+router.patch('/profile', authMiddleware, (req, res) => {
+  const user = store.find('users', (u) => u.id === req.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const { name, email } = req.body || {};
+  const patch = {};
+  if (name !== undefined) {
+    const trimmed = String(name).trim();
+    if (!trimmed) return res.status(400).json({ error: 'Name cannot be empty' });
+    patch.name = trimmed.slice(0, 80);
+  }
+  if (email !== undefined) {
+    const next = String(email).trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(next)) {
+      return res.status(400).json({ error: 'Invalid email address' });
+    }
+    const clash = store.find('users', (u) => u.id !== user.id && u.email.toLowerCase() === next);
+    if (clash) return res.status(409).json({ error: 'An account with this email already exists' });
+    patch.email = next;
+  }
+  if (!Object.keys(patch).length) return res.status(400).json({ error: 'Nothing to update' });
+  const updated = store.update('users', user.id, patch);
+  res.json({ user: publicUser(updated) });
+});
+
+router.post('/password', authMiddleware, (req, res) => {
+  const user = store.find('users', (u) => u.id === req.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const { currentPassword, newPassword } = req.body || {};
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'currentPassword and newPassword are required' });
+  }
+  if (String(newPassword).length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  }
+  if (!verifyPassword(currentPassword, user.passwordHash)) {
+    return res.status(401).json({ error: 'Current password is incorrect' });
+  }
+  store.update('users', user.id, { passwordHash: hashPassword(newPassword) });
+  res.json({ ok: true });
+});
+
 export default router;

@@ -1,19 +1,68 @@
-import { useState } from 'react'
-import { Settings as SettingsIcon, Star, Plus, Trash2, User, ShieldCheck } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Settings as SettingsIcon, Star, Plus, Trash2, User, KeyRound } from 'lucide-react'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { useAsync, useToast, Loader, Empty, CoinAvatar } from '../components/ui'
 import { useLive } from '../live'
 import { fmtPct, fmtPrice } from '../lib/format'
 
+interface SystemStatus {
+  llm: { enabled: boolean; model: string | null }
+  smtp: { enabled: boolean }
+  feed: { enabled: boolean; source: string }
+}
+
 export default function Settings() {
-  const { user } = useAuth()
+  const { user, refresh } = useAuth()
   const toast = useToast()
   const { list } = useLive()
   const { data, loading, reload } = useAsync(() => api.get<{ watchlist: any[] }>('/watchlist'), [])
+  const { data: status } = useAsync(() => api.get<SystemStatus>('/system/status'), [])
   const [selected, setSelected] = useState('SOL/USDT')
 
+  const [name, setName] = useState(user?.name || '')
+  const [email, setEmail] = useState(user?.email || '')
+  const [savingProfile, setSavingProfile] = useState(false)
+
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [savingPassword, setSavingPassword] = useState(false)
+
+  useEffect(() => {
+    if (user) {
+      setName(user.name || '')
+      setEmail(user.email || '')
+    }
+  }, [user])
+
   if (loading) return <Loader />
+
+  async function saveProfile() {
+    setSavingProfile(true)
+    try {
+      await api.patch('/auth/profile', { name, email })
+      await refresh()
+      toast('Profile updated', 'success')
+    } catch (err: any) {
+      toast(err.message, 'error')
+    } finally {
+      setSavingProfile(false)
+    }
+  }
+
+  async function changePassword() {
+    setSavingPassword(true)
+    try {
+      await api.post('/auth/password', { currentPassword, newPassword })
+      setCurrentPassword('')
+      setNewPassword('')
+      toast('Password changed', 'success')
+    } catch (err: any) {
+      toast(err.message, 'error')
+    } finally {
+      setSavingPassword(false)
+    }
+  }
 
   async function add() {
     await api.post('/watchlist', { symbol: selected, action: 'add' })
@@ -24,6 +73,9 @@ export default function Settings() {
     await api.post('/watchlist', { symbol, action: 'remove' })
     reload()
   }
+
+  const profileDirty = name !== (user?.name || '') || email !== (user?.email || '')
+  const passwordReady = currentPassword.length > 0 && newPassword.length >= 6
 
   return (
     <div>
@@ -43,11 +95,11 @@ export default function Settings() {
           </h3>
           <div className="field">
             <label>Name</label>
-            <input className="input" value={user?.name || ''} readOnly />
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div className="field">
             <label>Email</label>
-            <input className="input" value={user?.email || ''} readOnly />
+            <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
           <div className="field">
             <label>Plan</label>
@@ -58,38 +110,71 @@ export default function Settings() {
               </span>
             </div>
           </div>
+          <button className="btn primary" onClick={saveProfile} disabled={savingProfile || !profileDirty}>
+            {savingProfile ? 'Saving...' : 'Save profile'}
+          </button>
         </div>
 
         <div className="card">
           <h3 className="card-title">
-            <ShieldCheck size={14} style={{ verticalAlign: -2 }} /> Security
+            <KeyRound size={14} style={{ verticalAlign: -2 }} /> Security
           </h3>
-          <div className="list-item">
+          <div className="field">
+            <label>Current password</label>
+            <input
+              className="input"
+              type="password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              placeholder="Enter current password"
+            />
+          </div>
+          <div className="field">
+            <label>New password</label>
+            <input
+              className="input"
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="At least 6 characters"
+            />
+          </div>
+          <button className="btn primary" onClick={changePassword} disabled={savingPassword || !passwordReady}>
+            {savingPassword ? 'Updating...' : 'Change password'}
+          </button>
+
+          <div className="list-item" style={{ marginTop: 14 }}>
             <div>
-              <div style={{ fontWeight: 600 }}>Two-factor authentication</div>
+              <div style={{ fontWeight: 600 }}>LLM strategy provider</div>
               <div className="muted" style={{ fontSize: 12 }}>
-                Add an extra layer of protection to your account
+                Set NT_LLM_* environment variables to enable
               </div>
             </div>
-            <span className="badge yellow">Recommended</span>
+            <span className={`badge ${status?.llm.enabled ? 'green' : 'gray'}`}>
+              {status?.llm.enabled ? `Active${status.llm.model ? ` (${status.llm.model})` : ''}` : 'Disabled'}
+            </span>
           </div>
           <div className="list-item">
             <div>
-              <div style={{ fontWeight: 600 }}>API access &amp; webhooks</div>
+              <div style={{ fontWeight: 600 }}>Email alerts</div>
               <div className="muted" style={{ fontSize: 12 }}>
-                Enabled for incoming trading signals
+                Set NT_SMTP_* environment variables to enable
               </div>
             </div>
-            <span className="badge green">Active</span>
+            <span className={`badge ${status?.smtp.enabled ? 'green' : 'gray'}`}>
+              {status?.smtp.enabled ? 'Active' : 'Disabled'}
+            </span>
           </div>
           <div className="list-item">
             <div>
-              <div style={{ fontWeight: 600 }}>Withdrawal permissions</div>
+              <div style={{ fontWeight: 600 }}>Market data feed</div>
               <div className="muted" style={{ fontSize: 12 }}>
-                Never enabled for connected exchanges
+                {status?.feed.source || 'simulator'}
               </div>
             </div>
-            <span className="badge green">Disabled</span>
+            <span className={`badge ${status?.feed.enabled ? 'green' : 'yellow'}`}>
+              {status?.feed.enabled ? 'Live' : 'Simulated'}
+            </span>
           </div>
         </div>
       </div>

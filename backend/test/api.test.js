@@ -73,6 +73,23 @@ test('API smoke test boots the server and exercises core flows', async (t) => {
   assert.equal(r.status, 200);
   assert.equal(r.data.user.email, email);
 
+  r = await req('PATCH', '/auth/profile', { name: 'Renamed Trader' });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.user.name, 'Renamed Trader');
+
+  r = await req('PATCH', '/auth/profile', { name: '   ' });
+  assert.equal(r.status, 400);
+
+  r = await req('POST', '/auth/password', { currentPassword: 'wrong', newPassword: 'newsecret123' });
+  assert.equal(r.status, 401);
+
+  r = await req('POST', '/auth/password', { currentPassword: 'secret123', newPassword: 'x' });
+  assert.equal(r.status, 400);
+
+  r = await req('POST', '/auth/password', { currentPassword: 'secret123', newPassword: 'newsecret123' });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.ok, true);
+
   r = await req('GET', '/accounts');
   assert.equal(r.status, 200);
   const paper = r.data.accounts.find((a) => a.exchange === 'paper');
@@ -154,4 +171,11 @@ test('API smoke test boots the server and exercises core flows', async (t) => {
 
   r = await req('GET', '/watchlist');
   assert.equal(r.status, 200);
+
+  r = await req('GET', '/system/status');
+  assert.equal(r.status, 200);
+  assert.equal(typeof r.data.feed.enabled, 'boolean');
+  assert.equal(typeof r.data.marketData.enabled, 'boolean');
+  assert.equal(typeof r.data.llm.enabled, 'boolean');
+  assert.equal(typeof r.data.smtp.enabled, 'boolean');
 });

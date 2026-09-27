@@ -505,10 +505,20 @@ export async function syncLiveAccount(account) {
     account.syncedAt = Date.now();
     store.markDirty();
   }
-  if (positions) reconcileLivePositions(account, positions);
+  if (shouldReconcilePositions(account, positions)) reconcileLivePositions(account, positions);
 }
 
-function reconcileLivePositions(account, exchangePositions) {
+// Spot venues expose no exchange-side "position" list, so an empty (or missing)
+// list must never be interpreted as "the user has no positions". Only futures
+// markets keep a real position book that the local state can be reconciled to.
+export function shouldReconcilePositions(account, exchangePositions) {
+  if (!account || account.mode !== 'live') return false;
+  if (account.marketType === 'spot') return false;
+  return Array.isArray(exchangePositions);
+}
+
+export function reconcileLivePositions(account, exchangePositions) {
+  if (!shouldReconcilePositions(account, exchangePositions)) return;
   const adapter = getAdapter(account.exchange);
   if (!adapter) return;
   const openSymbols = new Set();

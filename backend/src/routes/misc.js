@@ -4,6 +4,11 @@ import { authMiddleware } from '../auth.js';
 import { market } from '../market.js';
 import { openPosition, getAccounts, getPortfolio, getEquityCurve, log } from '../trading.js';
 import { botEngine } from '../engine.js';
+import { liveFeed } from '../liveFeed.js';
+import { marketData } from '../marketData.js';
+import { userStreamManager } from '../userStream.js';
+import { llmEnabled, llmConfig } from '../aiProvider.js';
+import { smtpEnabled } from '../mailer.js';
 
 const router = express.Router();
 
@@ -147,6 +152,18 @@ router.get('/dashboard', (req, res) => {
       symbol: s,
       rate: +botEngine.fundingRate(s).toFixed(4),
     })),
+  });
+});
+
+// ------------------------------- system status -------------------------------
+router.get('/system/status', (req, res) => {
+  const llm = llmConfig();
+  res.json({
+    feed: liveFeed.status(),
+    marketData: marketData.status(),
+    userStream: userStreamManager.status(),
+    llm: { enabled: llmEnabled(), model: llmEnabled() ? llm.model : null },
+    smtp: { enabled: smtpEnabled() },
   });
 });
 

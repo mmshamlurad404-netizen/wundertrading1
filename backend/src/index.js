@@ -106,6 +106,26 @@ async function syncLiveAccounts() {
   }
 }
 
+// Preload real candles for every pair the bots/screener depend on so they do not
+// silently fall back to simulated history. Only runs once the public feed is up.
+const WARM_INTERVAL_MS = Number(process.env.NT_WARM_INTERVAL_MS) || 30000;
+function warmTargets() {
+  const timeframes = new Set(['1m', '1h']);
+  for (const bot of store.filter('bots', (b) => b.status === 'running')) {
+    if (bot.type === 'ai' && bot.config?.timeframe) timeframes.add(bot.config.timeframe);
+  }
+  return { pairs: market.listPairs(), timeframes: [...timeframes] };
+}
+async function warmMarketData() {
+  if (!liveFeed.enabled) return;
+  try {
+    const warmed = await marketData.warm(warmTargets());
+    if (warmed) console.log(`[marketdata] warmed ${warmed} candle series`);
+  } catch (err) {
+    console.error('[marketdata] warm failed:', err.message);
+  }
+}
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[nebulatrade] backend listening on http://0.0.0.0:${PORT}`);
   console.log(`[nebulatrade] websocket on ws://0.0.0.0:${PORT}/ws`);
@@ -113,5 +133,7 @@ server.listen(PORT, '0.0.0.0', () => {
   liveFeed.start();
   marketData.start();
   userStreamManager.start();
+  setTimeout(warmMarketData, 3000).unref?.();
+  setInterval(warmMarketData, WARM_INTERVAL_MS).unref?.();
   setInterval(syncLiveAccounts, SYNC_INTERVAL_MS).unref?.();
 });

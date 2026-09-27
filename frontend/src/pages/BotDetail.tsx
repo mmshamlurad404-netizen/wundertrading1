@@ -173,7 +173,7 @@ export default function BotDetail() {
           <div className="card">
             <h3 className="card-title">Configuration</h3>
             {Object.entries(currentConfig).map(([key, value]) =>
-              typeof value === 'object' ? null : (
+              key === 'useLlm' || typeof value === 'object' ? null : (
                 <div className="field" key={key} style={{ marginBottom: 10 }}>
                   <label>{key.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())}</label>
                   <input
@@ -189,6 +189,22 @@ export default function BotDetail() {
                   />
                 </div>
               )
+            )}
+            {bot.type === 'ai' && (
+              <label
+                className="row"
+                style={{ gap: 9, alignItems: 'center', margin: '4px 0 12px', cursor: 'pointer' }}
+              >
+                <input
+                  type="checkbox"
+                  checked={Boolean(currentConfig.useLlm)}
+                  onChange={(e) => setConfig((c) => ({ ...c, useLlm: e.target.checked }))}
+                />
+                <span style={{ fontWeight: 600, fontSize: 13 }}>Use LLM strategy</span>
+                <span className="muted" style={{ fontSize: 12 }}>
+                  (requires NT_LLM_* env; falls back to rules)
+                </span>
+              </label>
             )}
             <button
               className="btn primary block"

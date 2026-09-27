@@ -79,6 +79,9 @@ export async function fetchLiveBalance(account, secrets) {
 export async function fetchLivePositions(account, secrets) {
   const adapter = getAdapter(account.exchange);
   if (!adapter || !adapter.getPositions) return null;
+  // Spot markets have no exchange-side position book; local spot positions are
+  // tracked by the app, so never let an empty list trigger reconciliation.
+  if (account.marketType === 'spot') return null;
   const opts = {
     testnet: Boolean(account.testnet),
     marketType: account.marketType === 'spot' ? 'spot' : 'futures',

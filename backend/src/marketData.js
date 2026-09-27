@@ -162,6 +162,8 @@ export class MarketData {
     this.funding = new Map(); // concatenated symbol -> rate
     this.fundingAt = 0;
     this.errors = new Map();
+    this._warming = false;
+    this.warmedAt = 0;
   }
 
   async getCandles(pair, timeframe, limit = 200) {
@@ -242,9 +244,43 @@ export class MarketData {
     return Number.isFinite(rate) ? rate : null;
   }
 
+  // Proactively pull real history into the shared market state so the bot
+  // engine and screener do not fall back to simulated candles. Bounded
+  // concurrency keeps a dead upstream from blocking the scheduler.
+  async warm({ pairs = [], timeframes = [], limit = 200, concurrency = 4 } = {}) {
+    if (!this.enabled || this._warming) return 0;
+    this._warming = true;
+    const queue = [];
+    for (const pair of pairs) {
+      for (const tf of timeframes) {
+        if (TIMEFRAMES[tf]) queue.push([pair, tf]);
+      }
+    }
+    let done = 0;
+    const worker = async () => {
+      while (queue.length) {
+        const [pair, tf] = queue.shift();
+        try {
+          if (await this.getCandles(pair, tf, limit)) done++;
+        } catch {
+          /* best-effort */
+        }
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.max(1, concurrency) }, worker));
+    } finally {
+      this._warming = false;
+    }
+    this.warmedAt = Date.now();
+    return done;
+  }
+
   status() {
     return {
       enabled: this.enabled,
+      warming: Boolean(this._warming),
+      warmedAt: this.warmedAt || null,
       fundingSymbols: this.funding.size,
       fundingUpdatedAt: this.fundingAt || null,
       klineCacheSize: this.klines.size,

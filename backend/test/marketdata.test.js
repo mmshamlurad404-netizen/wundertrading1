@@ -11,6 +11,7 @@ import {
   parseOkxFunding,
   MarketData,
 } from '../src/marketData.js';
+import { market } from '../src/market.js';
 
 test('exchangeSymbol strips separators and uppercases', () => {
   assert.equal(exchangeSymbol('BTC/USDT'), 'BTCUSDT');
@@ -75,4 +76,33 @@ test('MarketData is offline and returns null when NT_LIVE_MARKET=0', async () =>
   assert.equal(await md.getOrderBook('BTC/USDT', 10), null);
   assert.equal(md.fundingRate('BTC/USDT'), null);
   assert.equal(await md.refreshFunding(), false);
+});
+
+test('warm is a no-op while live market data is disabled', async () => {
+  const md = new MarketData();
+  assert.equal(await md.warm({ pairs: ['BTC/USDT'], timeframes: ['1h'] }), 0);
+});
+
+test('warm fetches klines and publishes them into the market engine', async () => {
+  const md = new MarketData();
+  md.enabled = true;
+  const originalFetch = globalThis.fetch;
+  const rows = Array.from({ length: 5 }, (_, i) => [
+    1700000000000 + i * 3600000,
+    '100',
+    '110',
+    '90',
+    String(100 + i),
+    '1234',
+  ]);
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => rows });
+  try {
+    const warmed = await md.warm({ pairs: ['BTC/USDT'], timeframes: ['1h'], concurrency: 1 });
+    assert.equal(warmed, 1);
+    const candles = market.getCandles('BTC/USDT', '1h', 5);
+    assert.equal(candles.length, 5);
+    assert.equal(candles[candles.length - 1].c, 104);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
