@@ -26,7 +26,7 @@ interface DashboardData {
 }
 
 export default function Dashboard() {
-  const { data, loading, reload } = useAsync(() => api.get<DashboardData>('/dashboard'), [])
+  const { data, loading, reload } = useAsync(() => api.get<DashboardData>('/dashboard'), [], { pollMs: 10000 })
   const { tickers, list } = useLive()
 
   if (loading || !data) return <Loader label="Loading dashboard" />

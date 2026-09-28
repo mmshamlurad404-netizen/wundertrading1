@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   ReactNode,
 } from 'react'
@@ -162,35 +163,48 @@ export function CoinAvatar({ symbol, size = 28 }: { symbol: string; size?: numbe
 }
 
 /* ------------------------------- useApi hook ------------------------------- */
-export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
+export function useAsync<T>(
+  fn: () => Promise<T>,
+  deps: unknown[] = [],
+  options: { pollMs?: number } = {}
+) {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
+  const fnRef = useRef(fn)
+  fnRef.current = fn
+  const { pollMs } = options
 
   const reload = useCallback(() => setNonce((n) => n + 1), [])
 
   useEffect(() => {
     let active = true
-    setLoading(true)
-    fn()
-      .then((res) => {
-        if (active) {
-          setData(res)
-          setError(null)
-        }
-      })
-      .catch((err) => {
-        if (active) setError(err.message || 'Request failed')
-      })
-      .finally(() => {
-        if (active) setLoading(false)
-      })
+    let timer: ReturnType<typeof setInterval> | undefined
+    const run = (showLoading: boolean) => {
+      if (showLoading) setLoading(true)
+      fnRef.current()
+        .then((res) => {
+          if (active) {
+            setData(res)
+            setError(null)
+          }
+        })
+        .catch((err) => {
+          if (active) setError(err.message || 'Request failed')
+        })
+        .finally(() => {
+          if (active) setLoading(false)
+        })
+    }
+    run(true)
+    if (pollMs) timer = setInterval(() => run(false), pollMs)
     return () => {
       active = false
+      if (timer) clearInterval(timer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, nonce])
+  }, [...deps, nonce, pollMs])
 
   return { data, loading, error, reload, setData }
 }

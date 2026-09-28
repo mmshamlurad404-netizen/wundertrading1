@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { totpAt } from '../src/totp.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverPath = path.join(__dirname, '..', 'src', 'index.js');
@@ -89,6 +90,45 @@ test('API smoke test boots the server and exercises core flows', async (t) => {
   r = await req('POST', '/auth/password', { currentPassword: 'secret123', newPassword: 'newsecret123' });
   assert.equal(r.status, 200);
   assert.equal(r.data.ok, true);
+
+  // --- two-factor authentication flow ---
+  r = await req('POST', '/auth/2fa/setup', {});
+  assert.equal(r.status, 200);
+  const totpSecret = r.data.secret;
+  assert.ok(totpSecret && r.data.otpauthUrl.includes('otpauth://totp/'));
+
+  r = await req('POST', '/auth/2fa/enable', { code: '000000' });
+  assert.equal(r.status, 401);
+
+  r = await req('POST', '/auth/2fa/enable', { code: totpAt(totpSecret) });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.user.twoFactorEnabled, true);
+
+  r = await req('POST', '/auth/login', { email, password: 'newsecret123' }, false);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.requires2fa, true);
+  assert.ok(r.data.pendingToken);
+  assert.equal(r.data.token, undefined);
+  const pendingToken = r.data.pendingToken;
+
+  r = await req('POST', '/auth/login/2fa', { pendingToken, code: '000000' }, false);
+  assert.equal(r.status, 401);
+
+  r = await req('POST', '/auth/login/2fa', { pendingToken, code: totpAt(totpSecret) }, false);
+  assert.equal(r.status, 200);
+  assert.ok(r.data.token);
+  token = r.data.token;
+
+  r = await req('POST', '/auth/2fa/disable', { password: 'wrongpass', code: totpAt(totpSecret) });
+  assert.equal(r.status, 401);
+
+  r = await req('POST', '/auth/2fa/disable', { password: 'newsecret123', code: totpAt(totpSecret) });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.user.twoFactorEnabled, false);
+
+  r = await req('POST', '/auth/login', { email, password: 'newsecret123' }, false);
+  assert.equal(r.status, 200);
+  assert.ok(r.data.token);
 
   r = await req('GET', '/accounts');
   assert.equal(r.status, 200);

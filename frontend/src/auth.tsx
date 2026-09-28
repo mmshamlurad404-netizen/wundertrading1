@@ -7,13 +7,15 @@ export interface User {
   name: string
   plan: string
   createdAt: number
+  twoFactorEnabled?: boolean
 }
 
 interface AuthContextValue {
   user: User | null
   token: string | null
   loading: boolean
-  login: (email: string, password: string) => Promise<void>
+  login: (email: string, password: string) => Promise<{ requires2fa: boolean; pendingToken?: string }>
+  submitTwoFactor: (pendingToken: string, code: string) => Promise<void>
   register: (email: string, password: string, name: string) => Promise<void>
   logout: () => void
   refresh: () => Promise<void>
@@ -58,11 +60,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [token])
 
   async function login(email: string, password: string) {
-    const res = await api.post<{ token: string; user: User }>('/auth/login', { email, password })
-    localStorage.setItem('nt_token', res.token)
-    setTokenGetter(() => res.token)
-    setToken(res.token)
-    setUser(res.user)
+    const res = await api.post<{
+      token?: string
+      user: User
+      requires2fa?: boolean
+      pendingToken?: string
+    }>('/auth/login', { email, password })
+    if (res.requires2fa) return { requires2fa: true, pendingToken: res.pendingToken }
+    applySession(res.token!, res.user)
+    return { requires2fa: false }
+  }
+
+  async function submitTwoFactor(pendingToken: string, code: string) {
+    const res = await api.post<{ token: string; user: User }>('/auth/login/2fa', { pendingToken, code })
+    applySession(res.token, res.user)
+  }
+
+  function applySession(nextToken: string, nextUser: User) {
+    localStorage.setItem('nt_token', nextToken)
+    setTokenGetter(() => nextToken)
+    setToken(nextToken)
+    setUser(nextUser)
   }
 
   async function register(email: string, password: string, name: string) {
@@ -71,10 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       password,
       name,
     })
-    localStorage.setItem('nt_token', res.token)
-    setTokenGetter(() => res.token)
-    setToken(res.token)
-    setUser(res.user)
+    applySession(res.token, res.user)
   }
 
   function logout() {
@@ -91,7 +106,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const value = useMemo(
-    () => ({ user, token, loading, login, register, logout, refresh }),
+    () => ({ user, token, loading, login, submitTwoFactor, register, logout, refresh }),
     [user, token, loading]
   )
 

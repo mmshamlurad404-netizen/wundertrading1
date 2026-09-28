@@ -11,7 +11,7 @@ export default function Signals() {
     () => api.get<{ token: string; exampleUrl: string; body: any }>('/signals/webhook-token'),
     []
   )
-  const { data, loading, reload } = useAsync(() => api.get<{ signals: Signal[] }>('/signals'), [])
+  const { data, loading, reload } = useAsync(() => api.get<{ signals: Signal[] }>('/signals'), [], { pollMs: 15000 })
   const { data: botsData } = useAsync(() => api.get<{ bots: Bot[] }>('/bots'), [])
   const [copied, setCopied] = useState<string | null>(null)
 

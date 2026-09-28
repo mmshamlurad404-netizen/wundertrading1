@@ -217,7 +217,7 @@ export default function Bots() {
   const toast = useToast()
   const { data: typesData } = useAsync(() => api.get<{ types: any[] }>('/bots/types'), [])
   const { data: accountsData } = useAsync(() => api.get<{ accounts: Account[] }>('/accounts'), [])
-  const { data, loading, reload } = useAsync(() => api.get<{ bots: Bot[] }>('/bots'), [])
+  const { data, loading, reload } = useAsync(() => api.get<{ bots: Bot[] }>('/bots'), [], { pollMs: 8000 })
   const [creating, setCreating] = useState(false)
 
   async function toggle(bot: Bot) {

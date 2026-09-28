@@ -4,6 +4,17 @@ import { market } from './market.js';
 import { getAccountSecrets } from './trading.js';
 import { getAdapter } from './exchanges/index.js';
 import { userStreamUrl } from './exchanges/binance.js';
+import {
+  PRIVATE_STREAM_EXCHANGES,
+  bybitPrivateUrl,
+  okxPrivateUrl,
+  bybitAuthFrame,
+  bybitSubscribeFrame,
+  bybitPingFrame,
+  okxLoginFrame,
+  okxSubscribeFrame,
+  normalizePrivateEvent,
+} from './exchanges/privateStream.js';
 
 function num(v) {
   const n = Number(v);
@@ -75,8 +86,7 @@ function equityFromBalances(balances) {
 
 // Apply a normalized event to local state. Returns a short description of what
 // changed (or null when nothing matched).
-export function applyUserEvent(account, event, { store = defaultStore } = {}) {
-  const evt = normalizeUserEvent(event);
+export function applyNormalizedEvent(account, evt, { store = defaultStore } = {}) {
   if (!evt || !account) return null;
 
   if (evt.type === 'order') {
@@ -141,7 +151,12 @@ export function applyUserEvent(account, event, { store = defaultStore } = {}) {
   return null;
 }
 
-// Manages Binance user-data websocket streams so fills are reflected in real
+// Backwards-compatible entry point: normalizes a raw Binance frame first.
+export function applyUserEvent(account, event, opts = {}) {
+  return applyNormalizedEvent(account, normalizeUserEvent(event), opts);
+}
+
+// Manages exchange user-data websocket streams so fills are reflected in real
 // time instead of waiting for the 15s REST poll.
 export class UserStreamManager {
   constructor({ reconnencyDelayMs = 5000 } = {}) {
@@ -162,7 +177,10 @@ export class UserStreamManager {
   async sync() {
     let live = [];
     try {
-      live = defaultStore.filter('exchanges', (a) => a.mode === 'live' && a.connected && a.exchange === 'binance');
+      live = defaultStore.filter(
+        'exchanges',
+        (a) => a.mode === 'live' && a.connected && PRIVATE_STREAM_EXCHANGES.includes(a.exchange)
+      );
     } catch {
       return;
     }
@@ -175,49 +193,115 @@ export class UserStreamManager {
   }
 
   async subscribe(account) {
-    const adapter = getAdapter(account.exchange);
-    if (!adapter?.createListenKey) return;
     const secrets = getAccountSecrets(account);
     if (!secrets?.apiKey) return;
     try {
-      const listenKey = await adapter.createListenKey(secrets, {
-        marketType: account.marketType === 'spot' ? 'spot' : 'futures',
-        testnet: account.testnet,
-      });
-      if (!listenKey) return;
-      const url = userStreamUrl(listenKey, {
-        marketType: account.marketType === 'spot' ? 'spot' : 'futures',
-        testnet: account.testnet,
-      });
-      const ws = new WebSocket(url);
-      const entry = { account, ws, listenKey, keepAlive: null, closed: false };
-      ws.on('message', (buf) => {
-        try {
-          const event = JSON.parse(buf.toString());
-          applyUserEvent(account, event);
-          if (event.e === 'listenKeyExpired') this.resubscribe(account.id);
-        } catch {
-          /* ignore malformed frames */
-        }
-      });
-      ws.on('close', () => {
-        if (!entry.closed) this.resubscribe(account.id);
-      });
-      ws.on('error', () => {});
-      entry.keepAlive = setInterval(() => {
-        adapter
-          .keepAliveListenKey(secrets, listenKey, {
-            marketType: account.marketType === 'spot' ? 'spot' : 'futures',
-            testnet: account.testnet,
-          })
-          .catch(() => {});
-      }, 25 * 60 * 1000);
-      entry.keepAlive.unref?.();
-      this.streams.set(account.id, entry);
-      this.log.push(`subscribed ${account.exchange} ${account.id}`);
+      if (account.exchange === 'binance') return await this.subscribeBinance(account, secrets);
+      if (account.exchange === 'bybit' || account.exchange === 'okx') {
+        return this.subscribeAuthed(account, secrets);
+      }
     } catch (err) {
       this.log.push(`subscribe failed ${account.id}: ${err.message}`);
     }
+  }
+
+  async subscribeBinance(account, secrets) {
+    const adapter = getAdapter('binance');
+    if (!adapter?.createListenKey) return;
+    const opts = {
+      marketType: account.marketType === 'spot' ? 'spot' : 'futures',
+      testnet: account.testnet,
+    };
+    const listenKey = await adapter.createListenKey(secrets, opts);
+    if (!listenKey) return;
+    const ws = new WebSocket(userStreamUrl(listenKey, opts));
+    const entry = { account, ws, listenKey, keepAlive: null, ping: null, closed: false, authed: true };
+    ws.on('message', (buf) => {
+      try {
+        const event = JSON.parse(buf.toString());
+        applyUserEvent(account, event);
+        if (event.e === 'listenKeyExpired') this.resubscribe(account.id);
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
+    ws.on('close', () => {
+      if (!entry.closed) this.resubscribe(account.id);
+    });
+    ws.on('error', () => {});
+    entry.keepAlive = setInterval(() => {
+      adapter.keepAliveListenKey(secrets, listenKey, opts).catch(() => {});
+    }, 25 * 60 * 1000);
+    entry.keepAlive.unref?.();
+    this.streams.set(account.id, entry);
+    this.log.push(`subscribed ${account.exchange} ${account.id}`);
+  }
+
+  // Bybit V5 / OKX V5 private channels authenticate over the websocket itself.
+  subscribeAuthed(account, secrets) {
+    const exchange = account.exchange;
+    const testnet = Boolean(account.testnet);
+    const url = exchange === 'bybit' ? bybitPrivateUrl({ testnet }) : okxPrivateUrl({ testnet });
+    const ws = new WebSocket(url);
+    const entry = { account, ws, listenKey: null, keepAlive: null, ping: null, closed: false, authed: false };
+
+    ws.on('open', () => {
+      try {
+        ws.send(JSON.stringify(exchange === 'bybit' ? bybitAuthFrame(secrets) : okxLoginFrame(secrets)));
+      } catch {
+        /* ignore */
+      }
+    });
+
+    ws.on('message', (buf) => {
+      let msg;
+      try {
+        msg = JSON.parse(buf.toString());
+      } catch {
+        return;
+      }
+
+      if (!entry.authed) {
+        const ok =
+          (exchange === 'bybit' && msg.op === 'auth' && msg.success === true) ||
+          (exchange === 'okx' && msg.event === 'login' && msg.code === '0');
+        const failed =
+          (exchange === 'bybit' && msg.op === 'auth' && msg.success === false) ||
+          (exchange === 'okx' && msg.op === 'login' && msg.code !== '0') ||
+          (exchange === 'okx' && msg.event === 'error' && msg.op === 'login');
+        if (ok) {
+          entry.authed = true;
+          try {
+            ws.send(JSON.stringify(exchange === 'bybit' ? bybitSubscribeFrame() : okxSubscribeFrame()));
+          } catch {
+            /* ignore */
+          }
+          entry.ping = setInterval(() => {
+            try {
+              ws.send(exchange === 'bybit' ? JSON.stringify(bybitPingFrame()) : 'ping');
+            } catch {
+              /* ignore */
+            }
+          }, 20000);
+          entry.ping.unref?.();
+          this.log.push(`authenticated ${exchange} ${account.id}`);
+        } else if (failed) {
+          this.log.push(`auth rejected ${exchange} ${account.id}`);
+          this.resubscribe(account.id);
+        }
+        return;
+      }
+
+      if (msg.event === 'error') return;
+      const evt = normalizePrivateEvent(exchange, msg);
+      if (evt) applyNormalizedEvent(account, evt);
+    });
+
+    ws.on('close', () => {
+      if (!entry.closed) this.resubscribe(account.id);
+    });
+    ws.on('error', () => {});
+    this.streams.set(account.id, entry);
   }
 
   resubscribe(accountId) {
@@ -238,6 +322,7 @@ export class UserStreamManager {
       /* ignore */
     }
     if (entry.keepAlive) clearInterval(entry.keepAlive);
+    if (entry.ping) clearInterval(entry.ping);
     this.streams.delete(accountId);
   }
 

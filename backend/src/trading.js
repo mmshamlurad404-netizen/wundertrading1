@@ -420,50 +420,50 @@ export async function updateOpenPositions() {
 
     // Live futures venues keep protective orders on the exchange; spot venues
     // (all Iranian providers) have no stop orders, so we manage protection here.
+    let exchangeProtection = false;
     if (p.mode === 'live') {
       const account = findAccountById(p.accountId);
       const adapter = account ? getAdapter(account.exchange) : null;
-      const exchangeProtection = Boolean(adapter?.placeProtection) && account?.marketType === 'futures';
-      if (exchangeProtection) {
-        store.update('positions', p.id, patch);
-        continue;
-      }
+      exchangeProtection = Boolean(adapter?.placeProtection) && account?.marketType === 'futures';
     }
 
-    // trailing stop
+    // Trailing stops are always managed locally (they are not universally
+    // exchange-native), even when fixed TP/SL live on the venue.
     if (p.trailingStop) {
       const dist = p.trailingStop;
       if (p.side === 'long') {
         p.trailingPeak = Math.max(p.trailingPeak || price, price);
-        const stop = p.trailingPeak * (1 - dist / 100);
-        if (price <= stop) {
-          store.update('positions', p.id, patch);
+        if (price <= p.trailingPeak * (1 - dist / 100)) {
+          store.update('positions', p.id, { ...patch, trailingPeak: p.trailingPeak });
           await closePosition(p.id, 'trailing-stop');
           continue;
         }
       } else {
         p.trailingPeak = Math.min(p.trailingPeak || price, price);
-        const stop = p.trailingPeak * (1 + dist / 100);
-        if (price >= stop) {
-          store.update('positions', p.id, patch);
+        if (price >= p.trailingPeak * (1 + dist / 100)) {
+          store.update('positions', p.id, { ...patch, trailingPeak: p.trailingPeak });
           await closePosition(p.id, 'trailing-stop');
           continue;
         }
       }
+      patch.trailingPeak = p.trailingPeak;
     }
 
-    if (p.stopLoss) {
-      if ((p.side === 'long' && price <= p.stopLoss) || (p.side === 'short' && price >= p.stopLoss)) {
-        store.update('positions', p.id, patch);
-        await closePosition(p.id, 'stop-loss');
-        continue;
+    // When the venue holds native TP/SL, do not duplicate them locally.
+    if (!exchangeProtection) {
+      if (p.stopLoss) {
+        if ((p.side === 'long' && price <= p.stopLoss) || (p.side === 'short' && price >= p.stopLoss)) {
+          store.update('positions', p.id, patch);
+          await closePosition(p.id, 'stop-loss');
+          continue;
+        }
       }
-    }
-    if (p.takeProfit) {
-      if ((p.side === 'long' && price >= p.takeProfit) || (p.side === 'short' && price <= p.takeProfit)) {
-        store.update('positions', p.id, patch);
-        await closePosition(p.id, 'take-profit');
-        continue;
+      if (p.takeProfit) {
+        if ((p.side === 'long' && price >= p.takeProfit) || (p.side === 'short' && price <= p.takeProfit)) {
+          store.update('positions', p.id, patch);
+          await closePosition(p.id, 'take-profit');
+          continue;
+        }
       }
     }
     // liquidation

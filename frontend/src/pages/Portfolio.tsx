@@ -29,22 +29,26 @@ export default function Portfolio() {
   const toast = useToast()
   const { priceOf } = useLive()
   const [tab, setTab] = useState<'open' | 'history'>('open')
-  const { data, loading, reload } = useAsync(() => api.get<PortfolioData>('/portfolio'), [])
+  const { data, loading, reload } = useAsync(() => api.get<PortfolioData>('/portfolio'), [], { pollMs: 8000 })
   const { data: curveData } = useAsync(
     () => api.get<{ curve: { t: number; equity: number }[] }>('/portfolio/equity-curve?points=80'),
-    []
+    [],
+    { pollMs: 30000 }
   )
   const { data: allocData, reload: reloadAlloc } = useAsync(
     () => api.get<{ allocation: { asset: string; value: number; pct: number; qty: number }[] }>('/portfolio/allocation'),
-    []
+    [],
+    { pollMs: 15000 }
   )
   const { data: histData, reload: reloadHist } = useAsync(
     () => api.get<{ positions: Position[] }>('/positions?status=closed'),
-    []
+    [],
+    { pollMs: 20000 }
   )
   const { data: accountsData, reload: reloadAccounts } = useAsync(
     () => api.get<{ accounts: Account[] }>('/accounts'),
-    []
+    [],
+    { pollMs: 15000 }
   )
 
   if (loading || !data) return <Loader />

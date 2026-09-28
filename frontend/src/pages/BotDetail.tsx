@@ -13,7 +13,8 @@ export default function BotDetail() {
   const { priceOf } = useLive()
   const { data, loading, reload } = useAsync(
     () => api.get<{ bot: Bot; positions: Position[]; logs: LogEntry[] }>(`/bots/${id}`),
-    [id]
+    [id],
+    { pollMs: 6000 }
   )
   const [config, setConfig] = useState<Record<string, any>>({})
   const [signalAction, setSignalAction] = useState('buy')

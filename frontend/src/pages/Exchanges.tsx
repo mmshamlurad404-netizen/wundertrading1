@@ -21,7 +21,7 @@ interface SupportedExchange {
 export default function Exchanges() {
   const toast = useToast()
   const { data: supData } = useAsync(() => api.get<{ exchanges: SupportedExchange[] }>('/exchanges/supported'), [])
-  const { data, loading, reload } = useAsync(() => api.get<{ accounts: Account[] }>('/accounts'), [])
+  const { data, loading, reload } = useAsync(() => api.get<{ accounts: Account[] }>('/accounts'), [], { pollMs: 10000 })
   const [connecting, setConnecting] = useState<SupportedExchange | null>(null)
   const [label, setLabel] = useState('')
   const [apiKey, setApiKey] = useState('')

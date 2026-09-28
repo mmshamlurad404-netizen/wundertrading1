@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Settings as SettingsIcon, Star, Plus, Trash2, User, KeyRound } from 'lucide-react'
+import { Settings as SettingsIcon, Star, Plus, Trash2, User, KeyRound, ShieldCheck } from 'lucide-react'
 import { api } from '../api'
 import { useAuth } from '../auth'
 import { useAsync, useToast, Loader, Empty, CoinAvatar } from '../components/ui'
@@ -10,6 +10,7 @@ interface SystemStatus {
   llm: { enabled: boolean; model: string | null }
   smtp: { enabled: boolean }
   feed: { enabled: boolean; source: string }
+  userStream?: { started: boolean; streams: string[] }
 }
 
 export default function Settings() {
@@ -27,6 +28,12 @@ export default function Settings() {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [savingPassword, setSavingPassword] = useState(false)
+
+  const [twoFaSetup, setTwoFaSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null)
+  const [twoFaCode, setTwoFaCode] = useState('')
+  const [disablePassword, setDisablePassword] = useState('')
+  const [disableCode, setDisableCode] = useState('')
+  const [busy2fa, setBusy2fa] = useState(false)
 
   useEffect(() => {
     if (user) {
@@ -61,6 +68,49 @@ export default function Settings() {
       toast(err.message, 'error')
     } finally {
       setSavingPassword(false)
+    }
+  }
+
+  async function startTwoFa() {
+    setBusy2fa(true)
+    try {
+      const res = await api.post<{ secret: string; otpauthUrl: string }>('/auth/2fa/setup', {})
+      setTwoFaSetup(res)
+      setTwoFaCode('')
+    } catch (err: any) {
+      toast(err.message, 'error')
+    } finally {
+      setBusy2fa(false)
+    }
+  }
+
+  async function enableTwoFa() {
+    setBusy2fa(true)
+    try {
+      await api.post('/auth/2fa/enable', { code: twoFaCode })
+      setTwoFaSetup(null)
+      setTwoFaCode('')
+      await refresh()
+      toast('Two-factor authentication enabled', 'success')
+    } catch (err: any) {
+      toast(err.message, 'error')
+    } finally {
+      setBusy2fa(false)
+    }
+  }
+
+  async function disableTwoFa() {
+    setBusy2fa(true)
+    try {
+      await api.post('/auth/2fa/disable', { password: disablePassword, code: disableCode })
+      setDisablePassword('')
+      setDisableCode('')
+      await refresh()
+      toast('Two-factor authentication disabled', 'success')
+    } catch (err: any) {
+      toast(err.message, 'error')
+    } finally {
+      setBusy2fa(false)
     }
   }
 
@@ -143,6 +193,88 @@ export default function Settings() {
             {savingPassword ? 'Updating...' : 'Change password'}
           </button>
 
+          <div className="divider" style={{ margin: '16px 0' }} />
+          <div className="spread" style={{ marginBottom: 10 }}>
+            <div className="row" style={{ gap: 8, fontWeight: 600, fontSize: 13.5 }}>
+              <ShieldCheck size={14} /> Two-factor authentication
+            </div>
+            <span className={`badge ${user?.twoFactorEnabled ? 'green' : 'gray'}`}>
+              {user?.twoFactorEnabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </div>
+
+          {user?.twoFactorEnabled ? (
+            <>
+              <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+                Authenticator app protection is active. Disabling requires your password and a current code.
+              </p>
+              <div className="field">
+                <label>Password</label>
+                <input
+                  className="input"
+                  type="password"
+                  value={disablePassword}
+                  onChange={(e) => setDisablePassword(e.target.value)}
+                  placeholder="Current password"
+                />
+              </div>
+              <div className="field">
+                <label>Authentication code</label>
+                <input
+                  className="input mono"
+                  inputMode="numeric"
+                  value={disableCode}
+                  onChange={(e) => setDisableCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="000000"
+                />
+              </div>
+              <button
+                className="btn danger"
+                onClick={disableTwoFa}
+                disabled={busy2fa || !disablePassword || disableCode.length < 6}
+              >
+                {busy2fa ? 'Disabling...' : 'Disable 2FA'}
+              </button>
+            </>
+          ) : twoFaSetup ? (
+            <>
+              <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+                Add this secret to your authenticator app, then enter the 6-digit code it shows.
+              </p>
+              <div className="field">
+                <label>Secret key</label>
+                <input className="input mono" readOnly value={twoFaSetup.secret} onFocus={(e) => e.target.select()} />
+              </div>
+              <div className="field">
+                <label>Authentication code</label>
+                <input
+                  className="input mono"
+                  inputMode="numeric"
+                  value={twoFaCode}
+                  onChange={(e) => setTwoFaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="000000"
+                />
+              </div>
+              <div className="row" style={{ gap: 8 }}>
+                <button className="btn primary" onClick={enableTwoFa} disabled={busy2fa || twoFaCode.length < 6}>
+                  {busy2fa ? 'Verifying...' : 'Enable 2FA'}
+                </button>
+                <button className="btn" onClick={() => setTwoFaSetup(null)} disabled={busy2fa}>
+                  Cancel
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+                Protect your account with an authenticator app (TOTP).
+              </p>
+              <button className="btn" onClick={startTwoFa} disabled={busy2fa}>
+                {busy2fa ? 'Starting...' : 'Set up 2FA'}
+              </button>
+            </>
+          )}
+
           <div className="list-item" style={{ marginTop: 14 }}>
             <div>
               <div style={{ fontWeight: 600 }}>LLM strategy provider</div>
@@ -174,6 +306,19 @@ export default function Settings() {
             </div>
             <span className={`badge ${status?.feed.enabled ? 'green' : 'yellow'}`}>
               {status?.feed.enabled ? 'Live' : 'Simulated'}
+            </span>
+          </div>
+          <div className="list-item">
+            <div>
+              <div style={{ fontWeight: 600 }}>Real-time order stream</div>
+              <div className="muted" style={{ fontSize: 12 }}>
+                Binance, Bybit and OKX user-data websockets
+              </div>
+            </div>
+            <span className={`badge ${(status?.userStream?.streams?.length || 0) > 0 ? 'green' : 'gray'}`}>
+              {(status?.userStream?.streams?.length || 0) > 0
+                ? `${status!.userStream!.streams.length} active`
+                : 'Idle'}
             </span>
           </div>
         </div>

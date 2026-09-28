@@ -392,19 +392,22 @@ export default function Terminal() {
   const [tab, setTab] = useState<'positions' | 'orders' | 'history'>('positions')
   const [mode, setMode] = useState<'classic' | 'spread'>('classic')
 
-  const { data: accountsData, reload: reloadAccounts } = useAsync(() => api.get<{ accounts: Account[] }>('/accounts'), [])
+  const { data: accountsData, reload: reloadAccounts } = useAsync(() => api.get<{ accounts: Account[] }>('/accounts'), [], { pollMs: 8000 })
   const { data: cData, reload: reloadCandles } = useAsync(
     () => api.get<{ candles: Candle[] }>(`/market/candles/${encodeURIComponent(symbol)}?timeframe=${timeframe}&limit=200`),
-    [symbol, timeframe]
+    [symbol, timeframe],
+    { pollMs: 20000 }
   )
   const { data: pData, reload: reloadPositions } = useAsync(
     () => api.get<{ positions: Position[] }>('/positions?status=open'),
-    []
+    [],
+    { pollMs: 4000 }
   )
-  const { data: oData, reload: reloadOrders } = useAsync(() => api.get<{ orders: Order[] }>('/orders'), [])
+  const { data: oData, reload: reloadOrders } = useAsync(() => api.get<{ orders: Order[] }>('/orders'), [], { pollMs: 8000 })
   const { data: hData, reload: reloadHistory } = useAsync(
     () => api.get<{ positions: Position[] }>('/positions?status=closed'),
-    []
+    [],
+    { pollMs: 15000 }
   )
 
   const openForSymbol = (pData?.positions || []).filter((p) => p.symbol === symbol)
