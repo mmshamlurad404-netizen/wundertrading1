@@ -1,7 +1,8 @@
 import { market, TIMEFRAMES } from './market.js';
 
 // Public, keyless market data. Binance drives the global majors; Iranian venues
-// (Wallex, Nobitex, Ompfinex) fill in pairs Binance does not quote. If every
+// (Wallex, Nobitex, Ompfinex) fill in pairs Binance does not quote, and Tabdeal
+// acts as a per-symbol fallback for any pair the bulk sources miss. If every
 // source is unreachable the platform keeps running on the deterministic
 // simulator, so the feed is best-effort and never fatal.
 const REQUEST_TIMEOUT = 8000;
@@ -9,6 +10,18 @@ const REQUEST_TIMEOUT = 8000;
 function num(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : undefined;
+}
+
+// Run an async mapper over items with a bounded number of concurrent workers.
+async function mapLimit(items, limit, fn) {
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      await fn(items[index]);
+    }
+  });
+  await Promise.all(workers);
 }
 
 // ---- pure parsers (keyed by concatenated exchange symbol, e.g. "BTCUSDT") ----
@@ -77,6 +90,16 @@ export function parseOmpfinexTickers(rows) {
   return out;
 }
 
+// Tabdeal exposes no bulk ticker, so its fallback source reads per-symbol depth
+// and derives a mid price from the best bid/ask.
+export function parseTabdealDepth(book) {
+  const bid = num(book?.bids?.[0]?.[0]);
+  const ask = num(book?.asks?.[0]?.[0]);
+  const price = bid && ask ? (bid + ask) / 2 : bid || ask;
+  if (!price || price <= 0) return null;
+  return { price };
+}
+
 const SOURCES = [
   {
     id: 'binance',
@@ -97,6 +120,13 @@ const SOURCES = [
     id: 'ompfinex',
     url: 'https://api.ompfinex.com/v1/market/',
     parse: (json) => parseOmpfinexTickers(json?.data),
+  },
+  {
+    // Per-symbol fallback: only queried for pairs the bulk sources did not cover.
+    id: 'tabdeal',
+    perSymbol: true,
+    url: (symbol) => `https://api.tabdeal.org/r/api/v1/depth?symbol=${symbol}`,
+    parse: (json) => parseTabdealDepth(json),
   },
 ];
 
@@ -172,7 +202,11 @@ export class LiveFeed {
     const merged = {};
     const active = [];
     const available = [];
-    for (const source of orderSources()) {
+    const sources = orderSources();
+
+    // Bulk sources: one request yields ticks for many pairs.
+    for (const source of sources) {
+      if (source.perSymbol) continue;
       try {
         const ticks = await this.fetchSource(source);
         const parsed = Object.keys(ticks).length;
@@ -192,6 +226,37 @@ export class LiveFeed {
         this.errors.set(source.id, err.message);
       }
     }
+
+    // Per-symbol fallbacks only fetch the pairs still missing after bulk sources.
+    for (const source of sources) {
+      if (!source.perSymbol) continue;
+      const missing = [...this.symbols.entries()].filter(([pair]) => !merged[pair]);
+      if (!missing.length) continue;
+      let applied = 0;
+      await mapLimit(missing, 4, async ([pair, symbol]) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+        try {
+          const res = await fetch(source.url(symbol), { signal: controller.signal });
+          if (!res.ok) return;
+          const tick = source.parse(await res.json());
+          if (tick) {
+            merged[pair] = tick;
+            applied++;
+          }
+        } catch (err) {
+          this.errors.set(source.id, err.message);
+        } finally {
+          clearTimeout(timer);
+        }
+      });
+      if (applied) {
+        active.push(source.id);
+        available.push(source.id);
+        this.errors.delete(source.id);
+      }
+    }
+
     this.available = available;
     if (Object.keys(merged).length) {
       market.applyLivePrices(merged);

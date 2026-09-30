@@ -5,6 +5,7 @@ import {
   parseWallexTickers,
   parseNobitexTickers,
   parseOmpfinexTickers,
+  parseTabdealDepth,
   FEED_SOURCES,
   orderSources,
   LiveFeed,
@@ -13,15 +14,15 @@ import {
 import { market } from '../src/market.js';
 
 test('feed sources are ordered with Binance first', () => {
-  assert.deepEqual(FEED_SOURCES, ['binance', 'wallex', 'nobitex', 'ompfinex']);
+  assert.deepEqual(FEED_SOURCES, ['binance', 'wallex', 'nobitex', 'ompfinex', 'tabdeal']);
 });
 
 test('orderSources honors NT_FEED_PRIORITY and keeps every fallback', () => {
   assert.equal(orderSources(null)[0].id, 'binance');
   const ordered = orderSources('wallex, nobitex').map((s) => s.id);
   assert.deepEqual(ordered.slice(0, 2), ['wallex', 'nobitex']);
-  assert.deepEqual([...ordered].sort(), ['binance', 'nobitex', 'ompfinex', 'wallex']);
-  assert.equal(orderSources('made-up').length, 4);
+  assert.deepEqual([...ordered].sort(), ['binance', 'nobitex', 'ompfinex', 'tabdeal', 'wallex']);
+  assert.equal(orderSources('made-up').length, 5);
 });
 
 test('parseBinanceTickers maps rows and skips bad prices', () => {
@@ -68,6 +69,13 @@ test('parsers tolerate empty input', () => {
   assert.deepEqual(parseWallexTickers(undefined), {});
   assert.deepEqual(parseNobitexTickers({}), {});
   assert.deepEqual(parseOmpfinexTickers([]), {});
+  assert.equal(parseTabdealDepth(null), null);
+});
+
+test('parseTabdealDepth derives a mid price from the best bid/ask', () => {
+  assert.deepEqual(parseTabdealDepth({ bids: [['100', '1']], asks: [['102', '1']] }), { price: 101 });
+  assert.deepEqual(parseTabdealDepth({ bids: [['100', '1']], asks: [] }), { price: 100 });
+  assert.equal(parseTabdealDepth({ bids: [['0', '1']], asks: [] }), null);
 });
 
 test('poll merges sources and gives Binance priority', async () => {
@@ -99,6 +107,26 @@ test('poll merges sources and gives Binance priority', async () => {
     assert.equal(market.getPrice('SOL/USDT'), 200, 'wallex fills SOL');
     assert.equal(market.getPrice('AVAX/USDT'), 44, 'nobitex fills AVAX');
     assert.equal(market.getPrice('LINK/USDT'), 25.5, 'ompfinex fills pairs binance omitted');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('per-symbol fallback fills pairs the bulk sources missed', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('api.tabdeal.org')) {
+      return { ok: true, status: 200, json: async () => ({ bids: [['10', '1']], asks: [['12', '1']] }) };
+    }
+    throw new Error('bulk source down');
+  };
+  try {
+    const feed = new LiveFeed();
+    const ok = await feed.poll();
+    assert.equal(ok, true);
+    assert.deepEqual(feed.sources, ['tabdeal']);
+    assert.deepEqual(feed.available, ['tabdeal']);
   } finally {
     globalThis.fetch = original;
   }
